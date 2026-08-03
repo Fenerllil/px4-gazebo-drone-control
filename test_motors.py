@@ -6,7 +6,7 @@ import time
 
 
 class TestMotors:
-    def __init__(self, drone_name="x500"):
+    def __init__(self, drone_name="my_object"):
         self.drone_name = drone_name
         self.node = Node()
         self.flag = False
@@ -44,7 +44,7 @@ class TestMotors:
         start_time = time.time()  # 13 cекунд 
 
         try:
-            while time.time() - start_time < 10.0:  # 20 - 13 = 7 
+            while time.time() - start_time < 5.0:  # 20 - 13 = 7 
                 self.send_motor_command([800.0] * 4)
                 print(f"Текущая высота по Z: {self.current_z:.2f} м", end="\r")
                 time.sleep(0.01)
