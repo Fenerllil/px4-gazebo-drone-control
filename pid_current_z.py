@@ -77,13 +77,12 @@ class Drone:
         self.flag = False
         self.min_rmp = 0.0
         self.max_rmp = 1000.0
-        self.start_rmp = 600.0
+        self.start_rmp = 720.0
 
-        self.pid_Tdes = Pid_Controller(kp=50.0,ki = 0.5,kd = 15.0)
-
-        self.pid_roll = Pid_Controller(kp =20.0, ki =0.0, kd = 3.0)
-        self.pid_pitch = Pid_Controller(kp= 20.0,ki = 0.0,kd = 3.0)
-        self.pid_yaw = Pid_Controller(kp = 5.0,ki = 0.0,kd = 1.0)
+        self.pid_Tdes = Pid_Controller(kp=40.0,ki = 1.5,kd = 16.0,limit = 100.0)
+        self.pid_roll = Pid_Controller(kp = 22.0, ki =0.0, kd = 4.0)
+        self.pid_pitch = Pid_Controller(kp= 22.0,ki = 0.0,kd = 4.0)
+        self.pid_yaw = Pid_Controller(kp = 4.0,ki = 0.0,kd = 0.5)
 
         current_z_topic = "/world/default/dynamic_pose/info"
         self.node.subscribe(Pose_V, current_z_topic, self._pose_callback)
@@ -92,8 +91,6 @@ class Drone:
         motor_topic = f"/{self.drone_name}/command/motor_speed"
         self.pub = self.node.advertise(motor_topic, Actuators)
         time.sleep(0.5) 
-
-
 
     def _pose_callback(self, msg: Pose_V):
         for p in msg.pose:
@@ -124,13 +121,13 @@ class Drone:
 
         start_time = time.time()
         print("Dron find")
-        #self.max_height = 0.0 
+        self.max_height = 0.0 
         try:
-            while time.time() - start_time <= 20.0:
+            while time.time() - start_time <= 60.0:
                 error = self.target_z - self.current_z
                 correction = self.pid_Tdes.calc(error)
                 current_rmp = self.start_rmp + correction 
-
+                current_rmp = max(400.0,min(820.0,current_rmp))
                 error_roll = self.target_roll - self.current_roll
                 rmp_roll = self.pid_roll.calc(error_roll)
                 error_pitch = self.target_pitch - self.current_pitch
@@ -141,7 +138,7 @@ class Drone:
 
 
                 #print(f"Значение коррекции{self.current_rmp:.2f}")
-                #self.max_height = max(self.max_height,self.current_z)
+                self.max_height = max(self.max_height,self.current_z)
                 
                 m0 = current_rmp - rmp_roll - rmp_pitch - rmp_yaw
                 m1 = current_rmp + rmp_roll + rmp_pitch - rmp_yaw
@@ -153,7 +150,7 @@ class Drone:
                 time.sleep(0.01)
 
         finally: 
-            #print(self.max_height)
+            print(self.max_height)
             self.send_motor_command([0.0]*4)
 
 if __name__ == "__main__":
