@@ -6,18 +6,21 @@ from gz.msgs10.actuators_pb2 import Actuators
 from gz.msgs10.pose_v_pb2 import Pose_V 
 
 class Pid_Controller:
-    def __init__(self,kp,ki,kd,limit = 50.0):
+    def __init__(self,kp,ki,kd,limit = 50.0,alpha = 0.2):
         self.kp = kp
         self.kd = kd
         self.ki = ki 
         self.integral = 0.0 
         self.last_error =  0.0
         self.limit = limit
+        self.alpha = alpha 
         #self.last_time = time.time()
+        self.filtered_derivative = 0.0
 
     def reset(self):
         self.last_error = 0.0 
         self.integral = 0.0 
+        self.filtered_derivative = 0.0
 
     def calc(self,error):
         #current_time = time.time()
@@ -32,8 +35,8 @@ class Pid_Controller:
 
         self.last_error = error
         #self.last_time = current_time 
-
-        return ((self.kp * error) + (self.ki * self.integral) + (self.kd * derivative))
+        self.filtered_derivative = (self.alpha * derivative) + ((1.0 - self.alpha) * self.filtered_derivative)
+        return ((self.kp * error) + (self.ki * self.integral) + (self.kd * self.filtered_derivative))
         
 def quaternion_to_euler(quat):
     #Крен
@@ -44,13 +47,13 @@ def quaternion_to_euler(quat):
 
     #Тангаж 
     l2 = +2.0*(w*y - z*x)
-    l2 = max(-1.0,min(1,0,l2))
+    l2 = max(-1.0,min(1.0,l2))
     pitch = math.asin(l2)
 
 
     #Рысканье
     l3 = +2.0*(w*z + x*y)
-    l4 = +1.0 - 2.0*(y**2 - z**2) 
+    l4 = +1.0 - 2.0*(y**2 + z**2) 
     yaw = math.atan2(l3,l4)
 
     return roll, pitch, yaw
@@ -62,7 +65,7 @@ class Drone:
         self.node = Node()
 
 
-        self.target_z = 5.0
+        self.target_z = 7.0
         self.current_z = 0.0
 
         self.target_roll = 0.0
@@ -79,9 +82,9 @@ class Drone:
         self.max_rmp = 1000.0
         self.start_rmp = 720.0
 
-        self.pid_Tdes = Pid_Controller(kp=40.0,ki = 1.5,kd = 16.0,limit = 100.0)
-        self.pid_roll = Pid_Controller(kp = 22.0, ki =0.0, kd = 4.0)
-        self.pid_pitch = Pid_Controller(kp= 22.0,ki = 0.0,kd = 4.0)
+        self.pid_Tdes = Pid_Controller(kp=30.0,ki = 1.5,kd = 45.0,limit = 100.0,alpha= 0.15)
+        self.pid_roll = Pid_Controller(kp = 16.0, ki =0.0, kd = 3.5,alpha = 0.3)
+        self.pid_pitch = Pid_Controller(kp= 16.0,ki = 0.0,kd = 3.5,alpha = 0.3)
         self.pid_yaw = Pid_Controller(kp = 4.0,ki = 0.0,kd = 0.5)
 
         current_z_topic = "/world/default/dynamic_pose/info"
@@ -127,7 +130,7 @@ class Drone:
                 error = self.target_z - self.current_z
                 correction = self.pid_Tdes.calc(error)
                 current_rmp = self.start_rmp + correction 
-                current_rmp = max(400.0,min(820.0,current_rmp))
+                current_rmp = max(400.0,min(800.0,current_rmp))
                 error_roll = self.target_roll - self.current_roll
                 rmp_roll = self.pid_roll.calc(error_roll)
                 error_pitch = self.target_pitch - self.current_pitch
@@ -145,6 +148,7 @@ class Drone:
                 m2 = current_rmp + rmp_roll - rmp_pitch + rmp_yaw
                 m3 = current_rmp - rmp_roll + rmp_pitch + rmp_yaw
                 self.send_motor_command([m0,m1,m2,m3])
+                print(f"Высота {self.current_z: .2f}")
                 
                 
                 time.sleep(0.01)
