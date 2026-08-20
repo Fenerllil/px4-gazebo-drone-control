@@ -223,7 +223,7 @@ class Drone:
             print(f"Максимальная высота: {self.max_height}")
             self.send_motor_command([0.0]*4)
             # Строим графики 
-            self.plot_data(history)
+            #self.plot_data(history)
 
 if __name__ == "__main__":
     drone = Drone(drone_name="my_object")
