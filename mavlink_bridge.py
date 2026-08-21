@@ -40,6 +40,19 @@ class MavlinkBridge:
         print("Доехали")
         self.node.subscribe(Pose_V, "/world/default/dynamic_pose/info", self._pose_callback)
 
+        self.last_time = None
+        self.last_roll = 0.0 
+        self.last_pitch = 0.0 
+        self.last_yaw = 0.0 
+
+        self.last_x = 0.0
+        self.last_y = 0.0 
+        self.last_z = 0.0 
+        self.last_Vx = 0.0 
+        self.last_Vy = 0.0
+        self.last_Vz = 0.0 
+
+
     def _pose_callback(self, msg: Pose_V):
         for p in msg.pose:
             if p.name == self.drone_name:
@@ -47,9 +60,39 @@ class MavlinkBridge:
                 boot_ms = int((time.time() - self.start_time) * 1000)
                 # Перевод рысканья из -pi до pi в 0 до 360
                 heading_deg = int(math.degrees(yaw) % 360.0)
-                
+                self.current_time = time.time()
+                if self.last_time == None:
+                    self.last_roll = roll
+                    self.last_pitch = pitch 
+                    self.last_yaw = yaw 
+                    self.last_x = p.position.x
+                    self.last_y = p.position.y 
+                    self.last_z = p.position.z
+                    self.last_time = time.time()
+                    break
+                dt = self.current_time - self.last_time
+                if dt <= 0:
+                    break
+                #Угловые скорости
+                self.current_Vroll = (roll - self.last_roll)/dt
+                self.current_Vpitch = (pitch - self.last_pitch)/dt
+                self.current_Vyaw = (yaw - self.last_yaw)/dt
+                #Линейные скорости
+                self.current_Vx = (p.position.x - self.last_x)/dt 
+                self.current_Vy = (p.position.y - self.last_y)/dt 
+                self.current_Vz = (p.position.z - self.last_z)/dt 
+                #Ускорения 
+                self.current_ax = (self.current_Vx - self.last_Vx)/dt
+                self.current_ay = (self.current_Vy - self.last_Vy)/dt
+                self.current_az = (self.current_Vz - self.last_Vz)/dt
                 # 1. Углы 
-                self.mav.mav.attitude_send(boot_ms, roll,pitch, yaw, 0.0, 0.0, 0.0)
+                self.mav.mav.attitude_send(
+                    boot_ms,
+                    roll,pitch, yaw, 
+                    self.current_Vroll, 
+                    self.current_Vpitch, 
+                    self.current_Vyaw
+                )
                 """
                 self.mav.mav.attitude_quaternion_send(
                     boot_ms,
@@ -60,14 +103,22 @@ class MavlinkBridge:
                     0.0, 0.0, 0.0
                 )
                 """
+                self.mav.mav.highres_imu_send(
+                    boot_ms * 1000,
+                    self.current_ax, self.current_ay, self.current_az,
+                    self.current_Vroll, self.current_Vpitch, self.current_Vyaw, 
+                    0.0, 0.0, 0.0, # Магнитометр 
+                    0.0, 0.0, 0.0, 0.0, # Давление, высота, температура 
+                    63 # Маска 
+                )
                 # 2.высота и компас на HUD
                 self.mav.mav.vfr_hud_send(
                     airspeed=0.0,
-                    groundspeed=0.0,
+                    groundspeed=math.sqrt(self.current_Vx**2 + self.current_Vy**2),
                     heading=heading_deg,
                     throttle=50,
                     alt=p.position.z, 
-                    climb=0.0
+                    climb=self.current_Vz
                 )
                 #3 Высоту QGc хавает от сюда. Вместо гпс шлем нули, но суем высоту.
                 alt_mm = int(p.position.z * 1000)
@@ -75,8 +126,23 @@ class MavlinkBridge:
                     boot_ms,
                     0, 0, 0,  # lat, lon, alt 
                     alt_mm,   # relative_alt идет в боковую панель
-                    0, 0, 0, heading_deg * 100
+                    int(self.current_Vx * 100), int(self.current_Vy *100), int(self.current_Vz * 100), heading_deg * 100
                 )
+                #Дублирует global_position и норм работает 
+                self.mav.mav.local_position_ned_send(
+                    boot_ms,
+                    p.position.x, p.position.y, -p.position.z,
+                    self.current_Vx, self.current_Vy, -self.current_Vz 
+                )
+                #Перезапись
+                self.last_x,self.last_y,self.last_z = p.position.x,p.position.y,p.position.z
+                self.last_roll = roll
+                self.last_pitch = pitch 
+                self.last_yaw = yaw 
+                self.last_Vx = self.current_Vx
+                self.last_Vy = self.current_Vy
+                self.last_Vz = self.current_Vz
+                self.last_time = self.current_time
                 break 
 
     def run(self):
