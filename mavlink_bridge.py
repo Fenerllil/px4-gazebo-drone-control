@@ -3,48 +3,45 @@ os.environ["MAVLINK20"] = "1"
 
 import time
 import math 
-from gz.transport13 import Node
-from gz.msgs10.pose_v_pb2 import Pose_V 
+import serial
+import struct
 from pymavlink import mavutil
 
+#порт, который выдал socat
+PORT_RX = "/tmp/tty_mavlink"
 
-
-
-
-def quaternion_to_euler(quat):
-    # Крен
-    w, x, y, z = quat.w, quat.x, quat.y, quat.z
+def quaternion_to_euler_raw(w, x, y, z):
     l0 = +2.0*(w*x + y*z)
     l1 = +1.0 - 2.0*(x**2 + y**2)
     roll = math.atan2(l0, l1)
 
-    # Тангаж 
     l2 = +2.0*(w*y - z*x)
     l2 = max(-1.0, min(1.0, l2))
     pitch = math.asin(l2)
 
-    # Рысканье
     l3 = +2.0*(w*z + x*y)
     l4 = +1.0 - 2.0*(y**2 + z**2) 
     yaw = math.atan2(l3, l4)
-
     return roll, pitch, yaw
 
 class MavlinkBridge:
-    def __init__(self, drone_name="my_object"):
-        self.drone_name = drone_name
-        self.node = Node()
+    def __init__(self):
         self.start_time = time.time()
         self.last_1hz_timer = 0.0
         self.mav = mavutil.mavlink_connection('udpout:127.0.0.1:14550', source_system=1, source_component=1)
-        print("Доехали")
-        self.node.subscribe(Pose_V, "/world/default/dynamic_pose/info", self._pose_callback)
+        print("Qgs подключен")
+        #Чтения бинарного протокола
+        try:
+            self.ser = serial.Serial(PORT_RX, baudrate=115200, timeout=0.01)
+            print(f"MavlinkBridge слушает порт {PORT_RX}")
+        except Exception as e:
+            print(f"Ошибка открытия порта {PORT_RX}: {e}"); exit(1)
 
+        
         self.last_time = None
         self.last_roll = 0.0 
         self.last_pitch = 0.0 
         self.last_yaw = 0.0 
-
         self.last_x = 0.0
         self.last_y = 0.0 
         self.last_z = 0.0 
@@ -52,98 +49,72 @@ class MavlinkBridge:
         self.last_Vy = 0.0
         self.last_Vz = 0.0 
 
-
-    def _pose_callback(self, msg: Pose_V):
-        for p in msg.pose:
-            if p.name == self.drone_name:
-                roll, pitch, yaw = quaternion_to_euler(p.orientation)
-                boot_ms = int((time.time() - self.start_time) * 1000)
-                # Перевод рысканья из -pi до pi в 0 до 360
-                heading_deg = int(math.degrees(yaw) % 360.0)
-                self.current_time = time.time()
-                if self.last_time == None:
-                    self.last_roll = roll
-                    self.last_pitch = pitch 
-                    self.last_yaw = yaw 
-                    self.last_x = p.position.x
-                    self.last_y = p.position.y 
-                    self.last_z = p.position.z
-                    self.last_time = time.time()
-                    break
-                dt = self.current_time - self.last_time
-                if dt <= 0:
-                    break
-                #Угловые скорости
-                self.current_Vroll = (roll - self.last_roll)/dt
-                self.current_Vpitch = (pitch - self.last_pitch)/dt
-                self.current_Vyaw = (yaw - self.last_yaw)/dt
-                #Линейные скорости
-                self.current_Vx = (p.position.x - self.last_x)/dt 
-                self.current_Vy = (p.position.y - self.last_y)/dt 
-                self.current_Vz = (p.position.z - self.last_z)/dt 
-                #Ускорения 
-                self.current_ax = (self.current_Vx - self.last_Vx)/dt
-                self.current_ay = (self.current_Vy - self.last_Vy)/dt
-                self.current_az = (self.current_Vz - self.last_Vz)/dt
-                # 1. Углы 
-                self.mav.mav.attitude_send(
-                    boot_ms,
-                    roll,pitch, yaw, 
-                    self.current_Vroll, 
-                    self.current_Vpitch, 
-                    self.current_Vyaw
-                )
-                """
-                self.mav.mav.attitude_quaternion_send(
-                    boot_ms,
-                    p.orientation.w,
-                    p.orientation.x,
-                    p.orientation.y,
-                    p.orientation.z,
-                    0.0, 0.0, 0.0
-                )
-                """
-                self.mav.mav.highres_imu_send(
-                    boot_ms * 1000,
-                    self.current_ax, self.current_ay, self.current_az,
-                    self.current_Vroll, self.current_Vpitch, self.current_Vyaw, 
-                    0.0, 0.0, 0.0, # Магнитометр 
-                    0.0, 0.0, 0.0, 0.0, # Давление, высота, температура 
-                    63 # Маска 
-                )
-                # 2.высота и компас на HUD
-                self.mav.mav.vfr_hud_send(
-                    airspeed=0.0,
-                    groundspeed=math.sqrt(self.current_Vx**2 + self.current_Vy**2),
-                    heading=heading_deg,
-                    throttle=50,
-                    alt=p.position.z, 
-                    climb=self.current_Vz
-                )
-                #3 Высоту QGc хавает от сюда. Вместо гпс шлем нули, но суем высоту.
-                alt_mm = int(p.position.z * 1000)
-                self.mav.mav.global_position_int_send(
-                    boot_ms,
-                    0, 0, 0,  # lat, lon, alt 
-                    alt_mm,   # relative_alt идет в боковую панель
-                    int(self.current_Vx * 100), int(self.current_Vy *100), int(self.current_Vz * 100), heading_deg * 100
-                )
-                #Дублирует global_position и норм работает 
-                self.mav.mav.local_position_ned_send(
-                    boot_ms,
-                    p.position.x, p.position.y, -p.position.z,
-                    self.current_Vx, self.current_Vy, -self.current_Vz 
-                )
-                #Перезапись
-                self.last_x,self.last_y,self.last_z = p.position.x,p.position.y,p.position.z
-                self.last_roll = roll
-                self.last_pitch = pitch 
-                self.last_yaw = yaw 
-                self.last_Vx = self.current_Vx
-                self.last_Vy = self.current_Vy
-                self.last_Vz = self.current_Vz
-                self.last_time = self.current_time
-                break 
+    def process_binary_data(self, x, y, z, qw, qx, qy, qz):
+        roll, pitch, yaw = quaternion_to_euler_raw(qw, qx, qy, qz)
+        boot_ms = int((time.time() - self.start_time) * 1000)
+        heading_deg = int(math.degrees(yaw) % 360.0)
+        
+        self.current_time = time.time()
+        if self.last_time == None:
+            self.last_roll = roll
+            self.last_pitch = pitch 
+            self.last_yaw = yaw 
+            self.last_x = x
+            self.last_y = y 
+            self.last_z = z
+            self.last_time = time.time()
+            return
+            
+        dt = self.current_time - self.last_time
+        if dt <= 0: return
+        
+        self.current_Vroll = (roll - self.last_roll)/dt
+        self.current_Vpitch = (pitch - self.last_pitch)/dt
+        self.current_Vyaw = (yaw - self.last_yaw)/dt
+        
+        self.current_Vx = (x - self.last_x)/dt 
+        self.current_Vy = (y - self.last_y)/dt 
+        self.current_Vz = (z - self.last_z)/dt 
+        
+        # формулы ускорений
+        self.current_ax = (self.current_Vx - self.last_Vx)/dt
+        self.current_ay = (self.current_Vy - self.last_Vy)/dt
+        self.current_az = (self.current_Vz - self.last_Vz)/dt
+        
+        # 1. Отправка в MAVLink
+        self.mav.mav.attitude_send(
+            boot_ms, roll, pitch, yaw, 
+            self.current_Vroll, self.current_Vpitch, self.current_Vyaw
+        )
+        self.mav.mav.highres_imu_send(
+            boot_ms * 1000,
+            self.current_ax, self.current_ay, self.current_az,
+            self.current_Vroll, self.current_Vpitch, self.current_Vyaw, 
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 63 
+        )
+        self.mav.mav.vfr_hud_send(
+            airspeed=0.0,
+            groundspeed=math.sqrt(self.current_Vx**2 + self.current_Vy**2),
+            heading=heading_deg, throttle=50, alt=z, climb=self.current_Vz
+        )
+        alt_mm = int(z * 1000)
+        self.mav.mav.global_position_int_send(
+            boot_ms, 0, 0, 0, alt_mm, 
+            int(self.current_Vx * 100), int(self.current_Vy * 100), int(self.current_Vz * 100), heading_deg * 100
+        )
+        self.mav.mav.local_position_ned_send(
+            boot_ms, x, y, -z, self.current_Vx, self.current_Vy, -self.current_Vz 
+        )
+        
+        #перезапись
+        self.last_x, self.last_y, self.last_z = x, y, z
+        self.last_roll = roll
+        self.last_pitch = pitch 
+        self.last_yaw = yaw 
+        self.last_Vx = self.current_Vx
+        self.last_Vy = self.current_Vy
+        self.last_Vz = self.current_Vz
+        self.last_time = self.current_time
 
     def run(self):
         print("Подключение к 127.0.0.1:14550")
@@ -158,19 +129,41 @@ class MavlinkBridge:
                         mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED,
                         0, mavutil.mavlink.MAV_STATE_ACTIVE
                     )
-                    # Фиктивный статус систем (чтобы QGC видел 100% батарею и не выдавал ошибок)
                     self.mav.mav.sys_status_send(
                         0, 0, 0, 500, 12000, -1, 100, 0, 0, 0, 0, 0, 0
                     )
                     self.last_1hz_timer = now
                 
+                # ЧИТАЕМ БИНАРНЫЙ ПРОТОКОЛ ИЗ СOM-ПОРТА
+                if self.ser.in_waiting >= 33:
+                    byte = self.ser.read(1)
+                    if byte == b'\xAA':
+                        header = self.ser.read(2)
+                        if len(header) == 2:
+                            
+                            msg_id = header[0]
+                            payload_len = header[1]
+                            
+                            raw_packet = self.ser.read(payload_len + 1)
+                            if len(raw_packet) == (payload_len + 1):
+                                
+                                payload = raw_packet[:payload_len]
+                                received_crc = raw_packet[-1]
+                                
+                                # Проверка контрольной суммы
+                                calculated_crc = msg_id ^ payload_len
+                                for b in payload: calculated_crc ^= b
+                                    
+                                if calculated_crc == received_crc and msg_id == 0x01:
+                                    
+                                    # РАСПАКОВЫВАЕМ И СРАЗУ ПУСКАЕМ В ТВОЙ МАТЕМАТИЧЕСКИЙ БЛОК
+                                    x, y, z, qw, qx, qy, qz = struct.unpack('<7f', payload)
+                                    self.process_binary_data(x, y, z, qw, qx, qy, qz)
+                                    
                 time.sleep(0.05)
         except KeyboardInterrupt:
             print("\nОстановка")
 
 if __name__ == "__main__":
-    bridge = MavlinkBridge(drone_name="my_object")
+    bridge = MavlinkBridge()
     bridge.run()
-
-
-                
