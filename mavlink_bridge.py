@@ -135,6 +135,7 @@ class MavlinkBridge:
                     self.last_1hz_timer = now
                 
                 # ЧИТАЕМ БИНАРНЫЙ ПРОТОКОЛ ИЗ СOM-ПОРТА
+                from protocol import CustomProtocol
                 if self.ser.in_waiting >= 33:
                     byte = self.ser.read(1)
                     if byte == b'\xAA':
@@ -154,11 +155,12 @@ class MavlinkBridge:
                                 calculated_crc = msg_id ^ payload_len
                                 for b in payload: calculated_crc ^= b
                                     
-                                if calculated_crc == received_crc and msg_id == 0x01:
-                                    
-                                    # РАСПАКОВЫВАЕМ И СРАЗУ ПУСКАЕМ В ТВОЙ МАТЕМАТИЧЕСКИЙ БЛОК
-                                    x, y, z, qw, qx, qy, qz = struct.unpack('<7f', payload)
-                                    self.process_binary_data(x, y, z, qw, qx, qy, qz)
+                                if msg_id == CustomProtocol.msg_id and payload_len == CustomProtocol.payload_len:
+                                    if CustomProtocol.validate_crc(msg_id,payload_len,payload,received_crc):
+                                        x, y, z, qw, qx, qy, qz = CustomProtocol.unpack_pose(payload)
+                                        self.process_binary_data(x, y, z, qw, qx, qy, qz)
+                                    else:
+                                        print("Ошибка пакета")
                                     
                 time.sleep(0.05)
         except KeyboardInterrupt:
